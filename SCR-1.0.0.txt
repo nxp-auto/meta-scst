@@ -1,82 +1,82 @@
 NXP Software Content Register
 
-Package: 						meta-scst
-Version: 						1.0
-Outgoing license:  				GPL-2.0
-License file: 					LICENSE.txt
-Format: 						source code
-Description and comments:		A53 SCST Linux Integration Demo for S32G platform(Yocto Meta Layer)
-Release location: 				https://github.com/nxp-auto/meta-scst
-Origin: 						NXP (GPL-2.0)
+Package:                           meta-scst
+Version:                           1.0
+Outgoing license:                  GPL-2.0
+License file:                      LICENSE.txt
+Format:                            source code
+Description and comments:          A53 SCST Linux Integration Demo for S32G platform(Yocto Meta Layer)
+Release location:                  https://github.com/nxp-auto/meta-scst
+Origin:                            NXP (GPL-2.0)
 
 --------------------------------------------
 PATCHES IN META_SCST
 --------------------------------------------
 
-Patches for:               		arm-trusted-firmware
-Version:                   		2.5
-Name:					   		0001-add-atf-scst-runtime-service.patch
-Source Location:           		https://github.com/nxp-auto-linux/arm-trusted-firmware -b release/bsp34.0-2.5
-Patch Location:            		meta-scst/recipes-bsp/arm-trusted-firmware
-Outgoing License:          		BSD-3-Clause
-License File:              		docs/license.rst
-Description and comments:  		Register runtime service for SCST environment
-Origin:                    		NXP (BSD-3-Clause)
-								arm-trusted-firmware - ARM Limited (BSD-3-clause) - http://github.com/ARM-software/arm-trusted-firmware/
+Patches for:                       arm-trusted-firmware
+Version:                           2.5
+Name:                              0001-add-atf-scst-runtime-service.patch
+Source Location:                   https://github.com/nxp-auto-linux/arm-trusted-firmware -b release/bsp34.0-2.5
+Patch Location:                    meta-scst/recipes-bsp/arm-trusted-firmware
+Outgoing License:                  BSD-3-Clause
+License File:                      docs/license.rst
+Description and comments:          Register runtime service for SCST environment
+Origin:                            NXP (BSD-3-Clause)
+                                   arm-trusted-firmware - ARM Limited (BSD-3-clause) - http://github.com/ARM-software/arm-trusted-firmware/
 
 --------------------------------------------
 
-Patches for:               		linux
-Version:                   		5.10
-Name:					   		0001-add-dts-scst-reserved-memory.patch
-Source Location:           		https://github.com/nxp-auto-linux/linux -b release/bsp34.0-5.10.120-rt
-Patch Location:            		meta-scst/recipes-kernel/linux
-Outgoing License:          		GPL-2.0  
-License File:              		COPYING
-Description and comments:  		Reserve memory for SCST environment
-Origin:                    		NXP (GPL-2.0)
-								kernel.org (GPL-2.0) - https://www.kernel.org/
+Patches for:                       linux
+Version:                           5.10
+Name:                              0001-add-dts-scst-reserved-memory.patch
+Source Location:                   https://github.com/nxp-auto-linux/linux -b release/bsp34.0-5.10.120-rt
+Patch Location:                    meta-scst/recipes-kernel/linux
+Outgoing License:                  GPL-2.0  
+License File:                      COPYING
+Description and comments:          Reserve memory for SCST environment
+Origin:                            NXP (GPL-2.0)
+                                   kernel.org (GPL-2.0) - https://www.kernel.org/
 
 --------------------------------------------
 KERNEL MODULES IN META_SCST
 --------------------------------------------
 
-Modules for:               		Linux
-Version:                   		5.10
-Source Location:           		https://github.com/nxp-auto-linux/linux -b release/bsp34.0-5.10.120-rt
-Module Location:           		meta-scst/recipes-kernel/scst-drv
-Outgoing License:          		GPL-2.0  
-License File:              		COPYING
-Description and comments:  		Load the SCST firmware image to the reserved memory and handle commands from Linux userspace and secure monitor
-Origin:                    		NXP (GPL-2.0)
-								kernel.org (GPL-2.0) - https://www.kernel.org/
+Modules for:                       Linux
+Version:                           5.10
+Source Location:                   https://github.com/nxp-auto-linux/linux -b release/bsp34.0-5.10.120-rt
+Module Location:                   meta-scst/recipes-kernel/scst-drv
+Outgoing License:                  GPL-2.0  
+License File:                      COPYING
+Description and comments:          Load the SCST firmware image to the reserved memory and handle commands from Linux userspace and secure monitor
+Origin:                            NXP (GPL-2.0)
+                                   kernel.org (GPL-2.0) - https://www.kernel.org/
 --------------------------------------------
 APPS IN META_SCST
 --------------------------------------------
 
-App for:               	   		Linux
-Version:                   		5.10
-Source Location:           		https://github.com/nxp-auto-linux/linux -b release/bsp34.0-5.10.120-rt
-App Location:              		meta-scst/recipes-scst/scst-app
-Outgoing License:          		GPL-2.0  
-License File:              		COPYING
-Description and comments:  		Send SCST related command and get SCST test result from userspace 
-Origin:                    		NXP (GPL-2.0)
-								kernel.org (GPL-2.0) - https://www.kernel.org/
+App for:                           Linux
+Version:                           5.10
+Source Location:                   https://github.com/nxp-auto-linux/linux -b release/bsp34.0-5.10.120-rt
+App Location:                      meta-scst/recipes-scst/scst-app
+Outgoing License:                  GPL-2.0  
+License File:                      COPYING
+Description and comments:          Send SCST related command and get SCST test result from userspace 
+Origin:                            NXP (GPL-2.0)
+                                   kernel.org (GPL-2.0) - https://www.kernel.org/
 
 --------------------------------------------
 CONFIGURATION FILE IN META_SCST
 --------------------------------------------
 
-Configuration File for:	   		Linux
-Version:                   		5.10
-Source Location:           		https://github.com/nxp-auto-linux/linux -b release/bsp34.0-5.10.120-rt
-Configuration File Location:    meta-scst/conf, COPYING.MIT, README
-Outgoing License:          		GPL-2.0  
-License File:              		COPYING
-Description and comments:  		Send SCST related command and get SCST test result from userspace 
-Origin:                    		NXP (GPL-2.0)
-								kernel.org (GPL-2.0) - https://www.kernel.org/
+Configuration File for:            Linux
+Version:                           5.10
+Source Location:                   https://github.com/nxp-auto-linux/linux -b release/bsp34.0-5.10.120-rt
+Configuration File Location:       meta-scst/conf, COPYING.MIT, README
+Outgoing License:                  GPL-2.0  
+License File:                      COPYING
+Description and comments:          Send SCST related command and get SCST test result from userspace 
+Origin:                            NXP (GPL-2.0)
+                                   kernel.org (GPL-2.0) - https://www.kernel.org/
 
 --------------------------------------------
 
