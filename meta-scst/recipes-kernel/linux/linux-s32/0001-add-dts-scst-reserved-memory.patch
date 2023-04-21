@@ -1,0 +1,31 @@
+From 1186d61acb2669e51a2dfca44f347e40fa1adf5e Mon Sep 17 00:00:00 2001
+From: Youdong Huang <youdong.huang@nxp.com>
+Date: Wed, 9 Nov 2022 11:06:18 +0800
+Subject: [PATCH] add dts scst reserved memory
+
+Signed-off-by: Youdong Huang <youdong.huang@nxp.com>
+---
+ arch/arm64/boot/dts/freescale/s32g.dtsi | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/freescale/s32g.dtsi b/arch/arm64/boot/dts/freescale/s32g.dtsi
+index 9167aaa49d79..7c8d521002a3 100644
+--- a/arch/arm64/boot/dts/freescale/s32g.dtsi
++++ b/arch/arm64/boot/dts/freescale/s32g.dtsi
+@@ -48,6 +48,13 @@ pfe_reserved_bdr: pfebufs@835e0000 {
+ 			status = "okay";
+ 		};
+ 		/* ends 0x83600000 */
++
++		scst_reserved_mem: scst-mem@D0400000 {
++			/* 1 MB */
++			reg = <0 0xD0400000 0 0x100000>;
++			no-map;
++			status = "okay";
++		};
+ 	};
+ 
+ 	soc {
+-- 
+2.25.1
+

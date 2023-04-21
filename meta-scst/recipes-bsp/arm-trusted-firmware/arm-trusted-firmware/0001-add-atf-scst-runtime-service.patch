@@ -1,0 +1,582 @@
+From 95273877bfe35b64982c9f1d48f48de7d8466ce6 Mon Sep 17 00:00:00 2001
+From: Youdong Huang <youdong.huang@nxp.com>
+Date: Fri, 23 Dec 2022 17:48:11 +0800
+Subject: [PATCH] add atf scst runtime service
+
+Signed-off-by: Youdong Huang <youdong.huang@nxp.com>
+---
+ Makefile                     |   3 +-
+ bl31/bl31.mk                 |   5 ++
+ services/scst/scst_common.c  | 170 +++++++++++++++++++++++++++++++++++
+ services/scst/scst_helper.S  | 105 ++++++++++++++++++++++
+ services/scst/scst_main.c    | 169 ++++++++++++++++++++++++++++++++++
+ services/scst/scst_private.h |  62 +++++++++++++
+ 6 files changed, 513 insertions(+), 1 deletion(-)
+ create mode 100644 services/scst/scst_common.c
+ create mode 100644 services/scst/scst_helper.S
+ create mode 100644 services/scst/scst_main.c
+ create mode 100644 services/scst/scst_private.h
+
+diff --git a/Makefile b/Makefile
+index e7194a73f..35369f12c 100644
+--- a/Makefile
++++ b/Makefile
+@@ -472,7 +472,8 @@ INCLUDES		+=	-Iinclude				\
+ 				-Iinclude/lib/cpus/${ARCH}		\
+ 				-Iinclude/lib/el3_runtime/${ARCH}	\
+ 				${PLAT_INCLUDES}			\
+-				${SPD_INCLUDES}
++				${SPD_INCLUDES}				\
++				-Iservices/scst
+ 
+ include common/backtrace/backtrace.mk
+ 
+diff --git a/bl31/bl31.mk b/bl31/bl31.mk
+index 2088533ac..6aadb3d02 100644
+--- a/bl31/bl31.mk
++++ b/bl31/bl31.mk
+@@ -95,6 +95,11 @@ BL31_SOURCES		+=	lib/cpus/aarch64/wa_cve_2017_5715_bpiall.S	\
+ 				lib/cpus/aarch64/wa_cve_2017_5715_mmu.S
+ endif
+ 
++# for scst lib
++BL31_SOURCES        +=  services/scst/scst_common.c \
++                    services/scst/scst_main.c   \
++                    services/scst/scst_helper.S \
++
+ BL31_LINKERFILE		:=	bl31/bl31.ld.S
+ 
+ # Flag used to indicate if Crash reporting via console should be included
+diff --git a/services/scst/scst_common.c b/services/scst/scst_common.c
+new file mode 100644
+index 000000000..0d8724963
+--- /dev/null
++++ b/services/scst/scst_common.c
+@@ -0,0 +1,170 @@
++/*
++ * Copyright 2023 NXP
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#include <assert.h>
++#include <string.h>
++#include <arch.h>
++#include <arch_features.h>
++#include <arch_helpers.h>
++#include <bl31/bl31.h>
++#include <bl31/ehf.h>
++#include <common/bl_common.h>
++#include <common/debug.h>
++#include <common/runtime_svc.h>
++#include <drivers/console.h>
++#include <lib/el3_runtime/context_mgmt.h>
++#include <lib/pmf/pmf.h>
++#include <lib/runtime_instr.h>
++#include <plat/common/platform.h>
++#include <services/std_svc.h>
++#include <scst_private.h>
++#include <context.h>
++#include <lib/el3_runtime/cpu_data.h>
++
++scst_context_t scst_sp_context[PLATFORM_CORE_COUNT] = {0};
++
++static entry_point_info_t scst_image_ep_info = {0};
++static cpu_data_t g_cpu_ctx[PLATFORM_CORE_COUNT][2] = {0};
++
++static inline void scst_set_next_context(void *context)
++{
++    __asm__ volatile("msr   spsel, #1\n"
++             "mov   sp, %0\n"
++             "msr   spsel, #0\n"
++             : : "r" (context));
++}
++
++void scst_save_cpu_data(uint32_t env_state)
++{
++    if(env_state <= SCST_ENV)
++    {
++        memcpy(&g_cpu_ctx[plat_my_core_pos()][env_state], &percpu_data[plat_my_core_pos()], sizeof(cpu_data_t));
++    }
++}
++
++void scst_restore_cpu_data(uint32_t env_state)
++{
++    if(env_state <= SCST_ENV)
++    { 
++        memcpy(&percpu_data[plat_my_core_pos()], &g_cpu_ctx[plat_my_core_pos()][env_state], sizeof(cpu_data_t));
++    }
++}
++
++static uint32_t get_spsr_scst_entry(void)
++{
++    uint32_t spsr;
++    unsigned long el_status, mode;
++
++    /* figure out what mode we enter the non-secure world */
++    el_status = read_id_aa64pfr0_el1() >> ID_AA64PFR0_EL2_SHIFT;
++    el_status &= ID_AA64PFR0_ELX_MASK;
++    /* Whether we're going to run a hypervisor (EL2) or jump straight into the bootloader (EL1)*/
++#if (S32_HAS_HV == 0)
++    mode = MODE_EL1;
++#else
++    mode = (el_status) ? MODE_EL2 : MODE_EL1;
++#endif
++    spsr = SPSR_64(mode, MODE_SP_ELX, DISABLE_ALL_EXCEPTIONS);
++
++    return spsr;
++}
++
++static void set_scst_entry(void)
++{
++    SET_PARAM_HEAD(&scst_image_ep_info, PARAM_EP, VERSION_1, 0);
++    scst_image_ep_info.pc = (uintptr_t)SCST_ENTRY_POINT;
++    scst_image_ep_info.spsr = get_spsr_scst_entry();
++
++    SET_SECURITY_STATE(scst_image_ep_info.h.attr, NON_SECURE);
++}
++
++static entry_point_info_t *get_scst_entry(void)
++{
++    return &scst_image_ep_info;
++}
++
++void scst_synchronous_sp_exit(scst_context_t *scst_ctx, uint64_t ret)
++{
++    assert(scst_ctx != NULL);
++    /* Save the Secure EL1 system register context */
++    assert(cm_get_context(NON_SECURE) == &scst_ctx->cpu_ctx);
++    cm_el1_sysregs_context_save(NON_SECURE);
++
++    assert(scst_ctx->c_rt_ctx != 0);
++    scst_exit_sp(scst_ctx->c_rt_ctx, ret);
++
++    /* Should never reach here */
++    assert(0);
++}
++
++
++static uint64_t scst_synchronous_sp_entry(scst_context_t *scst_ctx)
++{
++    uint64_t rc;
++
++    assert(scst_ctx != NULL);
++
++    /* Apply the N-Secure EL1 system register context and switch to it */
++    assert(cm_get_context(NON_SECURE) == &scst_ctx->cpu_ctx);
++    
++    cm_el1_sysregs_context_restore(NON_SECURE);
++    cm_set_next_eret_context(NON_SECURE);
++
++    /* Invalidate TLB at EL1 */
++    __asm(
++        "dsb sy;"
++        "tlbi alle1;"
++        "dsb sy;"
++        "isb;"
++    );
++
++    rc = scst_enter_sp(&scst_ctx->c_rt_ctx);
++    return rc;
++}
++
++int32_t scst_setup_cpu_ctx(uint32_t core_id)
++{
++    scst_context_t *scst_ctx = &scst_sp_context[core_id];
++    entry_point_info_t *scst_entry_point = NULL;
++    uint64_t rc;
++
++    memset(scst_ctx, 0, sizeof(scst_context_t));
++    memset(&g_cpu_ctx[core_id][SCST_ENV], 0, sizeof(cpu_data_t));
++    
++    scst_ctx->mpidr = read_mpidr_el1();
++    scst_ctx->state = 0;
++    cm_set_context(&scst_ctx->cpu_ctx, NON_SECURE);
++
++    set_scst_entry();
++    scst_entry_point = get_scst_entry();
++
++    assert(scst_entry_point);
++    cm_init_my_context(scst_entry_point);
++
++    /* SCR_FIQ_BIT and SCR_IRQ_BIT */
++    cm_write_scr_el3_bit(NON_SECURE, 1, 0);
++    cm_write_scr_el3_bit(NON_SECURE, 2, 0);
++
++    rc = scst_synchronous_sp_entry(scst_ctx);
++    assert(rc != 0);
++
++    return rc;
++}
++
++void scst_clear_cpu_ctx(void)
++{
++    for(int core_id = 0; core_id < PLATFORM_CORE_COUNT; core_id++)
++    {
++        scst_context_t *scst_ctx = &scst_sp_context[core_id];
++        
++        if(scst_ctx->mpidr != 0)
++        {
++            memset(scst_ctx, 0, sizeof(scst_context_t));
++            memset(&g_cpu_ctx[core_id][SCST_ENV], 0, sizeof(cpu_data_t));
++        }
++    }
++}
++
+diff --git a/services/scst/scst_helper.S b/services/scst/scst_helper.S
+new file mode 100644
+index 000000000..417a2421b
+--- /dev/null
++++ b/services/scst/scst_helper.S
+@@ -0,0 +1,105 @@
++/*
++ * Copyright 2023 NXP
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#include <asm_macros.S>
++#include "scst_private.h"
++
++.global scst_enter_sp
++    /* ---------------------------------------------
++     * This function is called with SP_EL0 as stack.
++     * Here we stash our EL3 callee-saved registers
++     * on to the stack as a part of saving the C
++     * runtime and enter the secure payload.
++     * 'x0' contains a pointer to the memory where
++     * the address of the C runtime context is to be
++     * saved.
++     * ---------------------------------------------
++     */
++func scst_enter_sp
++    /* Make space for the registers that we're going to save */
++    mov x3, sp
++    str x3, [x0, #0]
++    sub sp, sp, #SCST_C_RT_CTX_SIZE
++
++    /* Save callee-saved registers on to the stack */
++    stp x19, x20, [sp, #SCST_C_RT_CTX_X19]
++    stp x21, x22, [sp, #SCST_C_RT_CTX_X21]
++    stp x23, x24, [sp, #SCST_C_RT_CTX_X23]
++    stp x25, x26, [sp, #SCST_C_RT_CTX_X25]
++    stp x27, x28, [sp, #SCST_C_RT_CTX_X27]
++    stp x29, x30, [sp, #SCST_C_RT_CTX_X29]
++
++    /* --------------------------------------------------------------------
++     * Clean the .data & .bss sections to main memory. This ensures
++     * that any global data which was initialised by the primary CPU
++     * is visible to secondary CPUs before they enable their data
++     * caches and participate in coherency.
++     * --------------------------------------------------------------------
++     */
++    /* ---------------------------------------------
++    adrp    x0, __DATA_START__
++    add x0, x0, :lo12:__DATA_START__
++    adrp    x1, __DATA_END__
++    add x1, x1, :lo12:__DATA_END__
++    sub x1, x1, x0
++    bl  clean_dcache_range
++
++    adrp    x0, __BSS_START__
++    add x0, x0, :lo12:__BSS_START__
++    adrp    x1, __BSS_END__
++    add x1, x1, :lo12:__BSS_END__
++    sub x1, x1, x0
++    bl  clean_dcache_range
++    * ---------------------------------------------
++    */
++
++    /* ---------------------------------------------
++     * Everything is setup now. el3_exit() will
++     * use the secure context to restore to the
++     * general purpose and EL3 system registers to
++     * ERET into OPTEE.
++     * ---------------------------------------------
++     */
++    b   el3_exit
++endfunc scst_enter_sp
++
++    /* ---------------------------------------------
++     * This function is called 'x0' pointing to a C
++     * runtime context saved in scst_enter_sp().  It
++     * restores the saved registers and jumps to
++     * that runtime with 'x0' as the new sp. This
++     * destroys the C runtime context that had been
++     * built on the stack below the saved context by
++     * the caller. Later the second parameter 'x1'
++     * is passed as return value to the caller
++     * ---------------------------------------------
++     */
++    .global scst_exit_sp
++func scst_exit_sp
++    /* Restore the previous stack */
++    mov sp, x0
++
++    /* Restore callee-saved registers on to the stack */
++    ldp x19, x20, [x0, #(SCST_C_RT_CTX_X19 - SCST_C_RT_CTX_SIZE)]
++    ldp x21, x22, [x0, #(SCST_C_RT_CTX_X21 - SCST_C_RT_CTX_SIZE)]
++    ldp x23, x24, [x0, #(SCST_C_RT_CTX_X23 - SCST_C_RT_CTX_SIZE)]
++    ldp x25, x26, [x0, #(SCST_C_RT_CTX_X25 - SCST_C_RT_CTX_SIZE)]
++    ldp x27, x28, [x0, #(SCST_C_RT_CTX_X27 - SCST_C_RT_CTX_SIZE)]
++    ldp x29, x30, [x0, #(SCST_C_RT_CTX_X29 - SCST_C_RT_CTX_SIZE)]
++
++    /* ---------------------------------------------
++     * This should take us back to the instruction
++     * after the call to the last scst_enter_sp().
++     * Place the second parameter to x0 so that the
++     * caller will see it as a return value from the
++     * original entry call
++     * ---------------------------------------------
++     */
++    mov x0, x1
++    ret
++endfunc scst_exit_sp
++
++
+diff --git a/services/scst/scst_main.c b/services/scst/scst_main.c
+new file mode 100644
+index 000000000..1da715607
+--- /dev/null
++++ b/services/scst/scst_main.c
+@@ -0,0 +1,169 @@
++/*
++ * Copyright 2023 NXP
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#include <common/debug.h>
++#include <common/runtime_svc.h>
++#include <lib/cpus/errata_report.h>
++#include <lib/cpus/wa_cve_2017_5715.h>
++#include <lib/cpus/wa_cve_2018_3639.h>
++#include <lib/smccc.h>
++#include <services/arm_arch_svc.h>
++#include <smccc_helpers.h>
++#include <plat/common/platform.h>
++#include <scst_private.h>
++#include <lib/mmio.h>
++#include <assert.h>
++#include <lib/el3_runtime/context_mgmt.h>
++#include <context.h>
++
++static uintptr_t scst_svc_smc_handler(uint32_t smc_fid,
++    u_register_t x1,
++    u_register_t x2,
++    u_register_t x3,
++    u_register_t x4,
++    void *cookie,
++    void *handle,
++    u_register_t flags)
++{
++    uint32_t core_id = plat_my_core_pos();
++    scst_context_t *scst_ctx = &scst_sp_context[core_id];
++    cpu_context_t *linux_ctx;
++        
++    switch (smc_fid) {
++
++    case SMCCC_LXOS_CMD: /* SMC call from Linux OS */
++        if(x1 == LXOS_SCST_SETUP)
++        {   
++            assert(handle == cm_get_context(NON_SECURE));
++            cm_el1_sysregs_context_save(NON_SECURE);            
++            scst_save_cpu_data(LXOS_ENV);
++            
++            /* Init the NON_SECURE_SCST context */
++            if(scst_ctx->mpidr == 0)
++            {
++                scst_setup_cpu_ctx(core_id);
++                scst_restore_cpu_data(LXOS_ENV);
++                cm_el1_sysregs_context_restore(NON_SECURE);
++                cm_set_next_eret_context(NON_SECURE);
++
++                linux_ctx = cm_get_context(NON_SECURE);
++
++                SMC_RET1(linux_ctx, SCST_SETUP_DONE);
++            }
++            else
++            {
++                SMC_RET1(handle, SCST_SETUP_DONE);
++            }
++        }
++        else if(x1 == LXOS_SCST_EXECUTE)
++        {
++            if(scst_ctx->mpidr == 0)
++            {
++                SMC_RET1(handle, x1);
++            }
++            else
++            {
++                /* Save Linux OS env */
++                assert(handle == cm_get_context(NON_SECURE));
++                cm_el1_sysregs_context_save(NON_SECURE);            
++                scst_save_cpu_data(LXOS_ENV);
++
++                linux_ctx = cm_get_context(NON_SECURE);
++
++                /* Enter SCST env */
++                scst_restore_cpu_data(SCST_ENV);
++                cm_el1_sysregs_context_restore(NON_SECURE);
++                cm_set_next_eret_context(NON_SECURE);
++
++                write_ctx_reg(get_gpregs_ctx(&scst_ctx->cpu_ctx),
++                    CTX_GPREG_X1,
++                    read_ctx_reg(get_gpregs_ctx(linux_ctx),
++                        CTX_GPREG_X1));
++                
++                write_ctx_reg(get_gpregs_ctx(&scst_ctx->cpu_ctx),
++                    CTX_GPREG_X2,
++                    read_ctx_reg(get_gpregs_ctx(linux_ctx),
++                        CTX_GPREG_X2));
++
++                write_ctx_reg(get_gpregs_ctx(&scst_ctx->cpu_ctx),
++                    CTX_GPREG_X3,
++                    read_ctx_reg(get_gpregs_ctx(linux_ctx),
++                        CTX_GPREG_X3));
++                
++                SMC_RET3(&scst_ctx->cpu_ctx, x1, x2, x3);
++            }           
++        }
++        else if(x1 == LXOS_SCST_CLEAR)
++        {
++            scst_clear_cpu_ctx();
++            SMC_RET1(handle, SCST_CLEAR_DONE);
++        }
++        else
++        {
++            scst_restore_cpu_data(LXOS_ENV);
++            cm_el1_sysregs_context_restore(NON_SECURE);
++            cm_set_next_eret_context(NON_SECURE);
++
++            SMC_RET1(handle, SMC_UNK);
++        }
++    case SMCCC_SCST_CMD: /* SMC call from scst env */
++        if(x1 == SCST_SETUP_DONE)
++        {
++            assert(&scst_ctx->cpu_ctx == cm_get_context(NON_SECURE));
++            cm_el1_sysregs_context_save(NON_SECURE);
++            scst_save_cpu_data(SCST_ENV);
++
++            /* Exit scst and back to scst_init */
++            scst_synchronous_sp_exit(scst_ctx, x1);
++        }
++        else if(x1 == SCST_EXECUTE_DONE)
++        {       
++            assert(&scst_ctx->cpu_ctx == cm_get_context(NON_SECURE));
++            cm_el1_sysregs_context_save(NON_SECURE);
++            scst_save_cpu_data(SCST_ENV);
++
++            /* Prapare back to Linux OS */
++            scst_restore_cpu_data(LXOS_ENV);
++            cm_el1_sysregs_context_restore(NON_SECURE);
++            cm_set_next_eret_context(NON_SECURE);
++
++            linux_ctx = cm_get_context(NON_SECURE);
++            
++            write_ctx_reg(get_gpregs_ctx(linux_ctx),
++                  CTX_GPREG_X1,
++                  read_ctx_reg(get_gpregs_ctx(&scst_ctx->cpu_ctx),
++                       CTX_GPREG_X1));
++
++            write_ctx_reg(get_gpregs_ctx(linux_ctx),
++                  CTX_GPREG_X2,
++                  read_ctx_reg(get_gpregs_ctx(&scst_ctx->cpu_ctx),
++                       CTX_GPREG_X2));
++
++            /* scst result should be included in x2 */
++            SMC_RET2(linux_ctx, x1, x2);
++        }
++        else
++        {
++            scst_restore_cpu_data(LXOS_ENV);
++            cm_el1_sysregs_context_restore(NON_SECURE);
++            cm_set_next_eret_context(NON_SECURE);
++
++            SMC_RET1(handle, SMC_UNK);
++        }
++    default:
++        SMC_RET1(handle, SMC_UNK);
++    }
++}
++
++/* Register Standard Service Calls as runtime service */
++DECLARE_RT_SVC(
++        scst_fast,
++        OEN_ARM_START,
++        OEN_ARM_END,
++        SMC_TYPE_FAST,
++        NULL,
++        scst_svc_smc_handler
++);
+diff --git a/services/scst/scst_private.h b/services/scst/scst_private.h
+new file mode 100644
+index 000000000..71551ef04
+--- /dev/null
++++ b/services/scst/scst_private.h
+@@ -0,0 +1,62 @@
++/*
++ * Copyright 2023 NXP
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#define SCST_C_RT_CTX_X19       0x0
++#define SCST_C_RT_CTX_X20       0x8
++#define SCST_C_RT_CTX_X21       0x10
++#define SCST_C_RT_CTX_X22       0x18
++#define SCST_C_RT_CTX_X23       0x20
++#define SCST_C_RT_CTX_X24       0x28
++#define SCST_C_RT_CTX_X25       0x30
++#define SCST_C_RT_CTX_X26       0x38
++#define SCST_C_RT_CTX_X27       0x40
++#define SCST_C_RT_CTX_X28       0x48
++#define SCST_C_RT_CTX_X29       0x50
++#define SCST_C_RT_CTX_X30       0x58
++#define SCST_C_RT_CTX_SIZE      0x60
++#define SCST_C_RT_CTX_ENTRIES       (SCST_C_RT_CTX_SIZE >> DWORD_SHIFT)
++
++#define LXOS_ENV 0
++#define SCST_ENV 1
++
++/* Function ID */
++#define SMCCC_LXOS_CMD                  U(0x8000000C)
++#define SMCCC_SCST_CMD                  U(0x8000000D)
++
++/* Command types */
++#define LXOS_SCST_SETUP                 U(0x4C000001)
++#define SCST_SETUP_DONE                 U(0x53000001)
++
++#define LXOS_SCST_EXECUTE               U(0x4C000002)
++#define SCST_EXECUTE_DONE               U(0x53000002)
++
++#define LXOS_SCST_CLEAR                 U(0x4C000003)
++#define SCST_CLEAR_DONE                 U(0x53000003)
++
++/* SCST env entry point */
++#define SCST_ENTRY_POINT                U(0xD0400000)
++
++#ifndef __ASSEMBLER__
++
++typedef struct scst_context {
++    uint32_t state;
++    uint64_t mpidr;
++    uint64_t c_rt_ctx;
++    cpu_context_t cpu_ctx;
++} scst_context_t;
++
++uint64_t scst_enter_sp(uint64_t *c_rt_ctx);
++void scst_exit_sp(uint64_t c_rt_ctx, uint64_t ret);
++void scst_synchronous_sp_exit(scst_context_t *scst_ctx, uint64_t ret);
++void scst_save_cpu_data(uint32_t env_state);
++void scst_restore_cpu_data(uint32_t env_state);
++int32_t scst_setup_cpu_ctx(uint32_t core_id);
++void scst_clear_cpu_ctx(void);
++
++extern scst_context_t scst_sp_context[];
++
++#endif
++
+-- 
+2.25.1
+
